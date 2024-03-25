@@ -105,6 +105,12 @@ You can filter the Job description as it includes the protected bucket name. In 
  
 S3 Inventory reports, Athena outputs, and S3 Batch Operations reports are stored in the solution bucket. These are your records of compliance with your defined minimum retention period. 
 
+**Note:**
+
+1.  Failed task in each restore. The manifest file automatically generated from Amazon S3 Inventory contains a CSV header row, because [S3 Batch Operations does not support header rows on CSV](https://docs.aws.amazon.com/AmazonS3/latest/userguide/inventory-configure-bops.html) you will notice one failed task in the restore job.
+
+
+
  
 ## Guidance and Troubleshooting
 
@@ -118,10 +124,10 @@ As it runs weekly, this solution does not apply immediately to newly-created obj
  
 
 In testing, we found that extending all 1 billion current version objects in a prefix completed remarkably quickly:
-Athena processing inventory (and outputting a 66 GB .csv file!): 14 minutes.
-S3 Batch Operations:
-o	Preparing [phase](https://docs.aws.amazon.com/AmazonS3/latest/userguide/batch-ops-job-status.html): Approximately eight hours.
-o	Active phase (applying Object Locks): Approximately 24 hours.
+1. Athena processing inventory (and outputting a 66 GB .csv file!): 14 minutes.
+2. S3 Batch Operations:
+*	Preparing [phase](https://docs.aws.amazon.com/AmazonS3/latest/userguide/batch-ops-job-status.html): Approximately eight hours.
+*	Active phase (applying Object Locks): Approximately 24 hours.
 
 This shows that the solution scales to even the largest S3 buckets. Note that as the default [Athena DML query](https://docs.aws.amazon.com/athena/latest/ug/service-limits.html) timeout is 30 minutes, if your bucket has more than around 2 billion objects, then you may need to take one or both of the following actions:
 1.	Request an increased DML query timeout in [Athena service quotas](https://console.aws.amazon.com/servicequotas/home?region=us-east-1#!/services/athena/quotas).
