@@ -1,0 +1,1268 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: >-
+  Sets a compliance mode Object Lock on all current versions of objects in a specified S3 Bucket, and automatically extends the lock retention date to ensure continous protection for a minimum period.
+
+Metadata:
+
+  License:
+    Description: >-
+      'MIT No Attribution
+
+      Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+
+      Permission is hereby granted, free of charge, to any person obtaining a copy of
+      this software and associated documentation files (the "Software"), to deal in
+      the Software without restriction, including without limitation the rights to
+      use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+      the Software, and to permit persons to whom the Software is furnished to do so.
+
+      THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+      IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+      FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+      COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+      IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+      CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.'
+
+
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      -
+        Label:
+          default: "Amazon S3 Bucket containing objects to be protected"
+        Parameters:
+          - BucketwithObjLock
+          - BucketwithObjLockPrefix
+      -
+        Label:
+          default: "Retention settings"
+        Parameters:
+          - ObjMinimumRetention
+          - Buffer
+
+    ParameterLabels:
+      BucketwithObjLock:
+        default: "This solution sets a compliance mode Object Lock on all current versions of objects in a specified S3 bucket, and automatically extends the lock rentention dates to ensure continous protection for a minimum period."
+      BucketwithObjLockPrefix:
+        default: "Prefix (optional)"
+      ObjMinimumRetention:
+        default: "Minimum Object Lock retention period"
+      Buffer:
+        default: "Extension frequency"
+
+
+Parameters:
+  BucketwithObjLock:
+    Type: String
+    Description: Amazon S3 bucket containing objects to be protected. The bucket must have Object Lock enabled, and be in the same AWS Region as this CloudFormation stack deployment.
+    ConstraintDescription: Please specify a valid Amazon S3 Bucket name
+    MinLength: '3'
+    MaxLength: '63'
+
+
+  BucketwithObjLockPrefix:
+    Description: You can choose to protect only objects starting with a specific prefix. Leave blank to protect the entire bucket.
+    Type: String
+    MinLength: 0
+    MaxLength: 1024
+    ConstraintDescription: Value must be a Valid Amazon S3 Prefix
+
+
+  ObjMinimumRetention:
+    Description: Current versions of objects will always have a compliance-mode Object Lock for at least this number of future days. For retention periods longer than 365 days, edit 'ObjMinimumRetention:' in the template.
+    Default: 30
+    Type: Number
+    MinValue: 1
+    MaxValue: 365
+    ConstraintDescription: Value must be a valid Integer, higher than 1 and less than 365
+
+  Buffer:
+    Description: Every object will be have its lock extended every 'this' number of days, to 'minimum retention period + extension frequency' days in the future. The minimum value is 7 days (as the extension process runs once a week) and should be a multiple of 7. A longer extension frequency decreases how often each object has its lock extended, reducing costs.
+    Default: 7
+    Type: Number
+    MinValue: 7
+    MaxValue: 364
+    ConstraintDescription: Value must be a valid Integer and higher than 7
+
+
+Mappings:
+  Parameters:
+    Values:
+      batchopsjobreportprefix: reports/objectlock
+      inventoryschedule: Weekly
+      objlocksafetymargin: 7
+
+
+
+Resources:
+
+####################################### Convert Stack Name to Lower Case ###############################################
+
+  StackNametoLower:
+    Type: Custom::NametoLower
+    Properties:
+      ServiceToken: !GetAtt NametoLower.Arn
+      stackname: !Ref AWS::StackName
+
+
+  NametoLowerIAMRole:
+    DependsOn:
+      - CheckBucketLockConfig
+    Type: AWS::IAM::Role
+    Properties:
+      Policies:
+        - PolicyName: AWSLambdaBasicExecutionRole
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:*'
+                Effect: Allow
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "lambda.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+
+
+  NametoLower:
+    DependsOn:
+      - CheckBucketLockConfig
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Description: Enforces Lower case for Stackname
+      MemorySize: 256
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !GetAtt NametoLowerIAMRole.Arn
+      Timeout: 30
+      Code:
+        ZipFile: |
+          import cfnresponse
+
+
+          def lambda_handler(event, context):
+              to_lower = event['ResourceProperties'].get('stackname', '').lower()
+              responseData = dict(change_to_lower=to_lower)
+              cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData)
+
+##########################################################  Code Ends #############################################################
+
+################################################## Validate Protected Bucket #########################################
+
+  CheckBucketLockConfig:
+    Type: 'Custom::LambdaTrigger'
+    Properties:
+      ServiceToken: !GetAtt CheckBucketLockConfigLambdaFunction.Arn
+      bucketwithlock: !Ref BucketwithObjLock
+
+
+  CheckBucketLockConfigIAMRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: AWSLambdaBasicExecutionRole
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:*'
+                Effect: Allow
+        - PolicyName: Permissions
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:GetBucketObjectLockConfiguration'
+                Resource: !Sub arn:${AWS::Partition}:s3:::${BucketwithObjLock}
+
+
+  CheckBucketLockConfigLambdaFunction:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Handler: index.lambda_handler
+      Role: !GetAtt CheckBucketLockConfigIAMRole.Arn
+      Runtime: python3.11
+      Timeout: 60
+      MemorySize: 256
+      Code:
+        ZipFile: |
+            import json
+            import cfnresponse
+            import logging
+            import os
+            import boto3
+            from botocore.exceptions import ClientError
+            from botocore.client import Config
+
+            # Enable debugging for troubleshooting
+            # boto3.set_stream_logger("")
+
+
+            # Set up logging
+            logger = logging.getLogger(__name__)
+            logger.setLevel('INFO')
+
+
+            # Define Environmental Variables
+            my_region = str(os.environ['AWS_REGION'])
+
+
+            # Set SDK paramters
+            config = Config(retries = {'max_attempts': 5})
+
+            # Set variables
+            # Set Service Parameters
+            s3Client = boto3.client('s3', config=config, region_name=my_region)
+
+
+            def check_bucket_lock_config(bucket):
+                logger.info(f"Checking if Bucket Lock Configuration Exists")
+                try:
+                    get_lock_config = s3Client.get_object_lock_configuration(
+                        Bucket=bucket,
+                    )
+                except ClientError as e:
+                    logger.error(e)
+                    raise
+                else:
+                    logger.info(f"Bucket has Object Lock Configuration Enabled, proceeding with deployment ...")
+                    return get_lock_config
+
+
+
+            def lambda_handler(event, context):
+              # Define Environmental Variables
+              s3Bucket  = event.get('ResourceProperties').get('bucketwithlock')
+
+              logger.info(f'Event detail is: {event}')
+
+              if event.get('RequestType') == 'Create':
+                # logger.info(event)
+                try:
+                  logger.info("Stack event is Create, checking specified Bucket has Object Lock Enabled...")
+                  check_bucket_lock_config(s3Bucket)
+                  responseData = {}
+                  responseData['message'] = "Successful"
+                  logger.info(f"Sending Invocation Response {responseData['message']} to Cloudformation Service")
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData)
+                except Exception as e:
+                  logger.error(e)
+                  responseData = {}
+                  responseData['message'] = str(e)
+                  failure_reason = str(e)
+                  logger.info(f"Sending Invocation Response {responseData['message']} to Cloudformation Service")
+                  cfnresponse.send(event, context, cfnresponse.FAILED, responseData, reason=failure_reason)
+
+
+              elif event.get('RequestType') == 'Delete' or event.get('RequestType') == 'Update':
+                logger.info(event)
+                try:
+                  logger.info(f"Stack event is Delete or Update, nothing to do....")
+                  responseData = {}
+                  responseData['message'] = "Completed"
+                  logger.info(f"Sending Invocation Response {responseData['message']} to Cloudformation Service")
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData)
+                except Exception as e:
+                  logger.error(e)
+                  responseData = {}
+                  responseData['message'] = str(e)
+                  failure_reason = str(e)
+                  logger.info(f"Sending Invocation Response {responseData['message']} to Cloudformation Service")
+                  cfnresponse.send(event, context, cfnresponse.FAILED, responseData, reason=failure_reason)
+
+
+################################################ Code Ends ####################################################
+
+
+
+  ExtendObjLockInventoryBucket:
+    DependsOn:
+      - CheckBucketLockConfig
+    Type: 'AWS::S3::Bucket'
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub 'objlock-${AWS::AccountId}-${AWS::Region}-${StackNametoLower.change_to_lower}'
+      LifecycleConfiguration:
+        Rules:
+          - Id: ArchiveRule
+            Status: Enabled
+            ObjectSizeGreaterThan: 409600
+            Transitions:
+              - TransitionInDays: 0
+                StorageClass: GLACIER_IR
+          - Id: ExpirationRule
+            Status: Enabled
+            ExpirationInDays: 91
+            NoncurrentVersionExpiration:
+                NoncurrentDays: 3
+          - Id: delete-incomplete-mpu
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Function: !GetAtt ExtendObjLockAthenaQueryLambdaFunction.Arn
+            Event: 's3:ObjectCreated:*'
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: suffix
+                    Value: .txt
+                  - Name: prefix
+                    Value: !Sub ${AWS::AccountId}/
+          - Function: !GetAtt ExtendObjLockS3BatchJobLambdaFunction.Arn
+            Event: 's3:ObjectCreated:*'
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: suffix
+                    Value: .csv
+                  - Name: prefix
+                    Value: athena-query-results/
+
+
+
+
+  LambdaNotificationPermission1:
+    DependsOn:
+      - CheckBucketLockConfig
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      FunctionName: !GetAtt ExtendObjLockAthenaQueryLambdaFunction.Arn
+      Action: 'lambda:InvokeFunction'
+      Principal: s3.amazonaws.com
+      SourceAccount: !Ref 'AWS::AccountId'
+      SourceArn: !Sub 'arn:${AWS::Partition}:s3:::objlock-${AWS::AccountId}-${AWS::Region}-${StackNametoLower.change_to_lower}'
+
+  LambdaNotificationPermission2:
+    DependsOn:
+      - CheckBucketLockConfig
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      FunctionName: !GetAtt ExtendObjLockS3BatchJobLambdaFunction.Arn
+      Action: 'lambda:InvokeFunction'
+      Principal: s3.amazonaws.com
+      SourceAccount: !Ref 'AWS::AccountId'
+      SourceArn: !Sub 'arn:${AWS::Partition}:s3:::objlock-${AWS::AccountId}-${AWS::Region}-${StackNametoLower.change_to_lower}'
+
+
+  ExtendObjLockAthenaWorkGroup:
+    Type: AWS::Athena::WorkGroup
+    DependsOn:
+      - ExtendObjLockInventoryBucket
+      - CheckBucketLockConfig
+    Properties:
+      Name: !Sub 'objlockworkgroup-${StackNametoLower.change_to_lower}'
+      Description: Auto Extend Object Lock Athena WorkGroup
+      State: ENABLED
+      WorkGroupConfiguration:
+        EnforceWorkGroupConfiguration: true
+        ResultConfiguration:
+          OutputLocation: !Sub 's3://objlock-${AWS::AccountId}-${AWS::Region}-${StackNametoLower.change_to_lower}/athena-query-results/'
+
+  BucketPolicyForInventoryBucket:
+     Type: AWS::S3::BucketPolicy
+     Properties:
+       Bucket: !Ref ExtendObjLockInventoryBucket
+       PolicyDocument:
+          Statement:
+          -
+              Effect: Allow
+              Principal:
+                  Service: s3.amazonaws.com
+              Action:
+              - s3:PutObject
+              Resource: !Sub arn:${AWS::Partition}:s3:::objlock-${AWS::AccountId}-${AWS::Region}-${StackNametoLower.change_to_lower}/*
+              Condition:
+                  ArnLike:
+                      aws:SourceArn: !Sub arn:${AWS::Partition}:s3:::${BucketwithObjLock}
+                  StringEquals:
+                      aws:SourceAccount: !Sub '${AWS::AccountId}'
+                      s3:x-amz-acl: bucket-owner-full-control
+
+
+  ExtendObjLockGlueDatabase:
+    DependsOn:
+      - CheckBucketLockConfig
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Description: S3 Object Lock Database
+        Name: !Sub 'extendobjlockgluedb-${StackNametoLower.change_to_lower}'
+        LocationUri: !Sub 's3://objlock-${AWS::AccountId}-${AWS::Region}-${StackNametoLower.change_to_lower}'
+
+
+  ExtendObjLockGlueTable:
+    DependsOn:
+      - CheckBucketLockConfig
+    Type: AWS::Glue::Table
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: !Ref ExtendObjLockGlueDatabase
+      TableInput:
+        Name: !Sub 'objlockinventory-${StackNametoLower.change_to_lower}'
+        Owner: owner
+        Retention: 0
+        Parameters:
+          projection.enabled : true
+          projection.dt.type : 'date'
+          projection.dt.format : 'yyyy-MM-dd-HH-mm'
+          projection.dt.range : '2022-01-01-00-00,NOW'
+          projection.dt.interval : '1'
+          projection.dt.interval.unit : 'HOURS'
+        StorageDescriptor:
+          Columns:
+            - Name: bucket
+              Type: string
+            - Name: key
+              Type: string
+            - Name: last_modified_date
+              Type: timestamp
+            - Name: e_tag
+              Type: string
+            - Name: is_mulitpart_upload
+              Type: boolean
+            - Name: object_lock_retain_until_date
+              Type: timestamp
+            - Name: object_lock_mode
+              Type: string
+            - Name: object_lock_legal_hold_status
+              Type: string
+          InputFormat: org.apache.hadoop.hive.ql.io.SymlinkTextInputFormat
+          OutputFormat: org.apache.hadoop.hive.ql.io.IgnoreKeyTextOutputFormat
+          Compressed: false
+          NumberOfBuckets: -1
+          SerdeInfo:
+            SerializationLibrary: org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe
+            Parameters:
+              serialization.format: '1'
+          BucketColumns: []
+          SortColumns: []
+          StoredAsSubDirectories: false
+          Location: !Sub 's3://objlock-${AWS::AccountId}-${AWS::Region}-${StackNametoLower.change_to_lower}/${AWS::AccountId}/${BucketwithObjLock}/autoextendobjlock-${StackNametoLower.change_to_lower}/hive/'
+        PartitionKeys:
+          - Name: dt
+            Type: string
+        TableType: EXTERNAL_TABLE
+
+
+
+  EnableS3Inventory:
+    DependsOn:
+      - CheckBucketLockConfig
+    Type: 'Custom::LambdaTrigger'
+    Properties:
+      ServiceToken: !GetAtt ExtendObjLockCustomResourceLambdaFunction.Arn
+      MyBucketwithObjLock: !Ref BucketwithObjLock
+      MyBucketwithObjLockPrefix: !Ref BucketwithObjLockPrefix
+      MyS3InventoryDestinationBucket: !Ref ExtendObjLockInventoryBucket
+
+
+  DeleteInventoryConfig:
+    Type: 'Custom::LambdaTrigger'
+    Properties:
+      ServiceToken: !GetAtt RemoveS3InventoryCustomResourceLambdaFunction.Arn
+      MyBucketwithObjLock: !Ref BucketwithObjLock
+
+
+  ExtendObjLockS3InventoryLambdaIAMRole:
+    DependsOn:
+      - CheckBucketLockConfig
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: AWSLambdaBasicExecutionRole
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:*'
+                Effect: Allow
+        - PolicyName: Permissions
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:PutInventoryConfiguration'
+                  - 's3:GetInventoryConfiguration'
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::${BucketwithObjLock}'
+
+
+
+  RemoveS3InventoryLambdaIAMRole:
+    DependsOn:
+      - CheckBucketLockConfig
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: AWSLambdaBasicExecutionRole
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:*'
+                Effect: Allow
+        - PolicyName: Permissions
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:PutInventoryConfiguration'
+                  - 's3:GetInventoryConfiguration'
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::${BucketwithObjLock}'
+
+
+  ExtendObjLockAthenaQueryIAMRole:
+    DependsOn:
+      - CheckBucketLockConfig
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: AWSLambdaBasicExecutionRole
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:*'
+                Effect: Allow
+        - PolicyName: Permissions
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'athena:StartQueryExecution'
+                  - 's3:PutObject'
+                  - 's3:ListBucket'
+                  - 'athena:GetQueryResults'
+                  - 's3:ListMultipartUploadParts'
+                  - 'athena:GetWorkGroup'
+                  - 's3:AbortMultipartUpload'
+                  - 'athena:StopQueryExecution'
+                  - 'athena:GetQueryExecution'
+                  - 's3:GetBucketLocation'
+                  - 's3:GetObject'
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::objlock-${AWS::AccountId}-${AWS::Region}-${StackNametoLower.change_to_lower}'
+                  - !Sub 'arn:${AWS::Partition}:s3:::objlock-${AWS::AccountId}-${AWS::Region}-${StackNametoLower.change_to_lower}/*'
+                  - !Sub "arn:${AWS::Partition}:athena:${AWS::Region}:${AWS::AccountId}:workgroup/objlockworkgroup-${StackNametoLower.change_to_lower}"
+              - Effect: Allow
+                Action:
+                  - 'glue:GetDatabase'
+                  - 'glue:GetPartition'
+                  - 'glue:GetTables'
+                  - 'glue:GetPartitions'
+                  - 'glue:GetTable'
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:table/extendobjlockgluedb-${StackNametoLower.change_to_lower}/*"
+                  - !Sub "arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:table/objlockinventory-${StackNametoLower.change_to_lower}"
+                  - !Sub "arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:database/extendobjlockgluedb-${StackNametoLower.change_to_lower}/*"
+                  - !Sub "arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:database/extendobjlockgluedb-${StackNametoLower.change_to_lower}"
+                  - !Sub "arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:catalog"
+
+
+
+  ExtendObjLockS3BatchJobIAMRole:
+    DependsOn:
+      - CheckBucketLockConfig
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: AWSLambdaBasicExecutionRole
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:*'
+                Effect: Allow
+        - PolicyName: Permissions
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:GetObject'
+                  - 's3:PutObject'
+                  - 's3:ListBucket'
+                  - 's3:GetBucketLocation'
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::objlock-${AWS::AccountId}-${AWS::Region}-${StackNametoLower.change_to_lower}'
+                  - !Sub 'arn:${AWS::Partition}:s3:::objlock-${AWS::AccountId}-${AWS::Region}-${StackNametoLower.change_to_lower}/*'
+              - Effect: Allow
+                Action:
+                  - 's3:DescribeJob'
+                  - 's3:ListJobs'
+                  - 's3:PutJobTagging'
+                  - 's3:CreateJob'
+                Resource: !Sub 'arn:${AWS::Partition}:s3:${AWS::Region}:${AWS::AccountId}:job/*'
+              - Effect: Allow
+                Action:
+                  - 'iam:PassRole'
+                Resource: !GetAtt S3BatchOperationsServiceIamRole.Arn
+
+
+  S3BatchOperationsServiceIamRole:
+    DependsOn:
+      - CheckBucketLockConfig
+    Type: 'AWS::IAM::Role'
+    Properties:
+      Policies:
+        - PolicyName: S3BatchOperationsServiceIamRolePolicy0
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:GetObject'
+                  - 's3:GetObjectVersion'
+                  - 's3:PutObject'
+                  - 's3:GetBucketLocation'
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::objlock-${AWS::AccountId}-${AWS::Region}-${StackNametoLower.change_to_lower}'
+                  - !Sub 'arn:${AWS::Partition}:s3:::objlock-${AWS::AccountId}-${AWS::Region}-${StackNametoLower.change_to_lower}/*'
+              - Effect: Allow
+                Action:
+                  - 's3:GetBucketLocation'
+                  - 's3:PutObjectRetention'
+                  - 's3:BypassGovernanceRetention'
+                  - 's3:GetBucketObjectLockConfiguration'
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::${BucketwithObjLock}/*'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${BucketwithObjLock}'
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: batchoperations.s3.amazonaws.com
+            Action: 'sts:AssumeRole'
+
+
+  ExtendObjLockCustomResourceLambdaFunction:
+    DependsOn:
+      - CheckBucketLockConfig
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Architectures:
+        - arm64
+      Runtime: python3.11
+      Timeout: 90
+      Environment:
+        Variables:
+          inv_report_schedule: !FindInMap [ Parameters, Values, inventoryschedule ]
+          account_id: !Ref AWS::AccountId
+          inv_config_id: !Sub 'autoextendobjlock-${StackNametoLower.change_to_lower}'
+      Handler: index.lambda_handler
+      Role: !GetAtt ExtendObjLockS3InventoryLambdaIAMRole.Arn
+      Code:
+        ZipFile: |
+            import json
+            import boto3
+            import os
+            import cfnresponse
+            import logging
+
+
+            # Set up logging
+            logger = logging.getLogger(__name__)
+            logger.setLevel('INFO')
+
+            # Enable Debug Logging
+            # boto3.set_stream_logger("")
+
+            SUCCESS = "SUCCESS"
+            FAILED = "FAILED"
+
+            # Create Service Client
+            s3 = boto3.resource('s3')
+            s3client = boto3.client('s3')
+
+            ### Define Environmental Variables ###
+            my_inv_schedule = str(os.environ['inv_report_schedule'])
+            accountId = str(os.environ['account_id'])
+            my_config_id = str(os.environ['inv_config_id'])
+
+
+            def config_s3_inventory(src_bucket, config_id, dst_bucket,
+                                    inv_format, src_prefix, dst_prefix, inv_status, inv_schedule, incl_versions):
+
+                ## Generate default kwargs ##
+                my_request_kwargs = {
+                    'Bucket': src_bucket,
+                    'Id': config_id,
+                    'InventoryConfiguration': {
+                        'Destination': {
+                            'S3BucketDestination': {
+                                # 'AccountId': account_id,
+                                'Bucket': f'arn:aws:s3:::{dst_bucket}',
+                                'Format': inv_format,
+                                'Prefix': dst_prefix,
+                                'Encryption': {
+                                    'SSES3': {}
+                                }
+                            }
+                        },
+                        'IsEnabled': inv_status,
+                        'Filter': {
+                            'Prefix': src_prefix
+                        },
+                        'Id': config_id,
+                        'IncludedObjectVersions': incl_versions,
+                        'OptionalFields': [
+                            'LastModifiedDate',
+                            'ETag',
+                            'IsMultipartUploaded',
+                            'ObjectLockRetainUntilDate',
+                            'ObjectLockMode',
+                            'ObjectLockLegalHoldStatus',
+                        ],
+                        'Schedule': {
+                            'Frequency': inv_schedule
+                        }
+                    }
+                }
+
+                ## Remove Prefix Parameter if No Value is Specified, All Bucket ##
+
+                logger.info(src_prefix)
+                if src_prefix == '' or src_prefix is None:
+                    logger.info(f'removing filter parameter')
+                    my_request_kwargs['InventoryConfiguration'].pop('Filter')
+                    logger.info(f"Modify kwargs no prefix specified: {my_request_kwargs}")
+
+                # Initiating Actual PutBucket Inventory API Call ##
+                try:
+                    logger.info(f'Applying inventory configuration to S3 bucket {src_bucket}')
+                    s3client.put_bucket_inventory_configuration(**my_request_kwargs)
+                except Exception as e:
+                    logger.error(f'An error occurred processing, error details are: {e}')
+
+
+            def del_inventory_configuration(src_bucket, config_id):
+                try:
+                    logger.info(f"Starting the process to remove the S3 Inventory configuration {config_id}")
+                    response = s3client.delete_bucket_inventory_configuration(
+                        Bucket=src_bucket,
+                        Id=config_id,
+                    )
+                except Exception as e:
+                    logger.error(e)
+                else:
+                    logger.info(f"Successfully deleted the S3 Inventory configuration {config_id}")
+
+            def lambda_handler(event, context):
+                my_incl_versions = 'Current'
+                my_inv_format = 'Parquet'
+                my_dest_prefix = accountId
+                my_inv_status = True
+                logger.info(f"Event details: {json.dumps(event, indent=2)}")
+                responseData={}
+                try:
+                    if event['RequestType'] == 'Delete':
+                        logger.info(f"Request Type: {event['RequestType']}")
+                        logger.info("No Action Required, Inventory deletion is handled by another custom resource!")
+                        logger.info("Sending response to custom resource after Delete")
+                    elif event['RequestType'] == 'Create' or event['RequestType'] == 'Update':
+                        logger.info(f"Request Type: {event['RequestType']}")
+                        my_src_bucket = event['ResourceProperties']['MyBucketwithObjLock']
+                        my_src_prefix = event['ResourceProperties']['MyBucketwithObjLockPrefix']
+                        my_dst_bucket = event['ResourceProperties']['MyS3InventoryDestinationBucket']
+                        config_s3_inventory(my_src_bucket, my_config_id, my_dst_bucket,
+                                                my_inv_format, my_src_prefix, my_dest_prefix, my_inv_status, my_inv_schedule, my_incl_versions)
+                        logger.info("Sending response to custom resource")
+                    responseStatus = 'SUCCESS'
+                    responseData = {'Success': 'Inventory configuration was successfully applied!'}
+                    cfnresponse.send(event, context, responseStatus, responseData)
+                except Exception as e:
+                    logger.error(f'Failed to process: {e}')
+                    responseStatus = 'FAILED'
+                    responseData = {'Failure': e}
+                    failure_reason = str(e)
+                    logger.info("Sending response to custom resource after an Error")
+                    cfnresponse.send(event, context, responseStatus, responseData, reason=failure_reason)
+
+#################################### Code Ends ########################################################
+
+
+
+  RemoveS3InventoryCustomResourceLambdaFunction:
+    DependsOn:
+      - CheckBucketLockConfig
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Architectures:
+        - arm64
+      Environment:
+        Variables:
+          inv_config_id: !Sub 'autoextendobjlock-${StackNametoLower.change_to_lower}'
+      Runtime: python3.11
+      Timeout: 90
+      Handler: index.lambda_handler
+      Role: !GetAtt RemoveS3InventoryLambdaIAMRole.Arn
+      Code:
+        ZipFile: |
+            import json
+            import boto3
+            import os
+            import cfnresponse
+            import logging
+            from botocore.exceptions import ClientError
+
+            # Set up logging
+            logger = logging.getLogger(__name__)
+            logger.setLevel('INFO')
+
+            SUCCESS = "SUCCESS"
+            FAILED = "FAILED"
+
+            ### Define Environmental Variables ###
+            # Define Region
+            my_region = str(os.environ['AWS_REGION'])
+            my_config_id = str(os.environ['inv_config_id'])
+
+            # Create Service Client
+            s3 = boto3.resource('s3', region_name=my_region)
+            s3client = boto3.client('s3', region_name=my_region)
+
+
+            # Remove S3 Inventory Configuration #
+            def del_inventory_configuration(src_bucket, config_id):
+                try:
+                    logger.info(f"Starting the process to remove the S3 Inventory configuration {config_id}")
+                    response = s3client.delete_bucket_inventory_configuration(
+                        Bucket=src_bucket,
+                        Id=config_id,
+                    )
+                except Exception as e:
+                    logger.error(e)
+                else:
+                    logger.info(f"Successfully deleted the S3 Inventory configuration {config_id}")
+
+            def lambda_handler(event, context):
+                my_src_bucket = event['ResourceProperties']['MyBucketwithObjLock']
+                logger.info("Received event: " + json.dumps(event, indent=2))
+                responseData={}
+                try:
+                    if event['RequestType'] == 'Delete':
+                        logger.info(f"Request Type is {event['RequestType']}")
+                        logger.info("Inventory configuration deletion is being initiated....!")
+                        del_inventory_configuration(my_src_bucket, my_config_id)
+                        logger.info("Sending response to custom resource after Delete")
+                        responseData['message'] = "Successful"
+                        logger.info(f"Sending Invocation Response {responseData['message']} to Cloudformation Service")
+                        cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData)
+                    elif event['RequestType'] == 'Create' or event['RequestType'] == 'Update':
+                        logger.info(f"Request Type is {event['RequestType']}")
+                        logger.info("No Action Required, Inventory PutConfiguration is handled by Another Function!")
+                        logger.info("Sending Successful response to custom resource")
+                        responseData['message'] = "Successful"
+                        logger.info(f"Sending Invocation Response {responseData['message']} to Cloudformation Service")
+                        cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData)
+                except Exception as e:
+                    logger.error(f'Deployment failed, see error details: {e}')
+                    responseStatus = 'FAILED'
+                    responseData = {'Failure': 'Deployment Failed!'}
+                    failure_reason = str(e)
+                    cfnresponse.send(event, context, responseStatus, responseData, reason=failure_reason)
+
+#################################### Code Ends ########################################################
+
+############################################# Athena Query Function ########################################
+
+  ExtendObjLockAthenaQueryLambdaFunction:
+    Type: 'AWS::Lambda::Function'
+    DependsOn:
+      - ExtendObjLockS3InventoryLambdaIAMRole
+      - CheckBucketLockConfig
+    Properties:
+      Architectures:
+        - arm64
+      Runtime: python3.11
+      Timeout: 180
+      Environment:
+        Variables:
+          obj_min_retention: !Ref ObjMinimumRetention
+          obj_safety_margin: !FindInMap [ Parameters, Values, objlocksafetymargin ]
+          retention_buffer: !Ref Buffer
+          workgroup_name: !Sub 'objlockworkgroup-${StackNametoLower.change_to_lower}'
+          glue_tbl: !Sub 'objlockinventory-${StackNametoLower.change_to_lower}'
+          glue_db: !Sub 'extendobjlockgluedb-${StackNametoLower.change_to_lower}'
+          s3_bucket: !Sub ${BucketwithObjLock}
+      Handler: index.lambda_handler
+      Role: !GetAtt ExtendObjLockAthenaQueryIAMRole.Arn
+      Code:
+        ZipFile: |
+            import json
+            from botocore.exceptions import ClientError
+            import logging
+            import os
+            import datetime
+            import boto3
+            from urllib import parse
+
+
+            # Set up logging
+            logger = logging.getLogger(__name__)
+            logger.setLevel('INFO')
+
+            # Enable Debug Logging
+            # boto3.set_stream_logger("")
+
+
+            # Define Environmental Variables
+            my_glue_db = str(os.environ['glue_db'])
+            my_glue_tbl = str(os.environ['glue_tbl'])
+            my_workgroup_name = str(os.environ['workgroup_name'])
+            my_s3_bucket = str(os.environ['s3_bucket'])
+            num_days = int(os.environ['obj_min_retention'])
+
+            ## Define Date Time and Min Retention Date
+            safety_margin = int(os.environ['obj_safety_margin'])
+
+            my_current_date = datetime.datetime.now().date()
+            retain_date = datetime.datetime.now().date() + datetime.timedelta(num_days) + datetime.timedelta(safety_margin)
+
+            logger.info(f'my_current_date is: {my_current_date}')
+            logger.info(f'my_retain_date is: {retain_date}')
+
+
+            # Set Service Client
+            athena_client = boto3.client('athena')
+
+
+            def start_query_execution(query_string, athena_db, workgroup_name, job_request_token):
+                logger.info(f'Starting Athena query...... with query string: {query_string}')
+                try:
+                    execute_query = athena_client.start_query_execution(
+                        QueryString=query_string,
+                        QueryExecutionContext={
+                            'Database': athena_db
+                        },
+                        WorkGroup=workgroup_name,
+                        ClientRequestToken= job_request_token,
+                    )
+                except ClientError as e:
+                    logger.info(e)
+                else:
+                    logger.info(f'Query Successful: {execute_query}')
+
+
+            def lambda_handler(event, context):
+                logger.info(event)
+                # Use sequencer to prevent duplicate invocation
+                my_event_sequencer = str(event['Records'][0]['s3']['object']['sequencer'])
+                my_request_token =  my_event_sequencer + '-' + my_event_sequencer + '-' + my_event_sequencer
+                # Construct dt partition string
+                my_dt = parse.unquote_plus(event['Records'][0]['s3']['object']['key'], encoding='utf-8').split('/')[-2].split('=')[-1]
+                logger.info(f'Initiating Main Function...')
+                # Specify the Athena Query #
+                my_query_string = f"""
+                SELECT DISTINCT bucket as "{my_s3_bucket}", key as "my_key"
+                FROM "{my_glue_db}"."{my_glue_tbl}"
+                WHERE dt = '{my_dt}'
+                AND
+                (object_lock_retain_until_date <= cast('{retain_date}' as timestamp) OR object_lock_mode IS NULL OR object_lock_mode != 'COMPLIANCE' ) ;
+                """
+                try:
+                    start_query_execution(my_query_string, my_glue_db, my_workgroup_name, my_request_token)
+                except Exception as e:
+                    logger.error(e)
+
+
+
+
+#################################### Code Ends ########################################################
+
+
+################################################## Submit Batch Operations Job Function ###########################
+
+  ExtendObjLockS3BatchJobLambdaFunction:
+    DependsOn:
+      - CheckBucketLockConfig
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Architectures:
+        - arm64
+      Environment:
+        Variables:
+          obj_retention: !Ref ObjMinimumRetention
+          retention_buffer: !Ref Buffer
+          batch_ops_report_bucket: !Sub 'objlock-${AWS::AccountId}-${AWS::Region}-${StackNametoLower.change_to_lower}'
+          batch_ops_role: !GetAtt S3BatchOperationsServiceIamRole.Arn
+          my_current_region: !Ref AWS::Region
+          my_account_id: !Ref AWS::AccountId
+          s3_bucket: !Sub ${BucketwithObjLock}
+          batch_ops_restore_report_prefix: !FindInMap [ Parameters, Values, batchopsjobreportprefix ]
+      Handler: index.lambda_handler
+      Role: !GetAtt ExtendObjLockS3BatchJobIAMRole.Arn
+      Runtime: python3.11
+      Timeout: 180
+      Code:
+        ZipFile: |
+          from urllib import parse
+          import boto3
+          import botocore
+          import os
+          import json
+          import logging
+          import datetime
+          from botocore.exceptions import ClientError
+
+          # Set up logging
+          logger = logging.getLogger(__name__)
+          logger.setLevel('INFO')
+
+          # Enable Verbose logging for Troubleshooting
+          # boto3.set_stream_logger("")
+
+          # Define Lambda Environmental Variable
+          my_role_arn = str(os.environ['batch_ops_role'])
+          report_bucket_name = str(os.environ['batch_ops_report_bucket'])
+          min_obj_retention = int(os.environ['obj_retention'])
+          retention_buffer = int(os.environ['retention_buffer'])
+          accountId = str(os.environ['my_account_id'])
+          my_region = str(os.environ['my_current_region'])
+          my_s3_bucket = str(os.environ['s3_bucket'])
+
+          ## Construct Object Retention Date to Datet*ime
+          num_and_buffer = min_obj_retention + retention_buffer
+          my_min_obj_retention = datetime.datetime.now() + datetime.timedelta(num_and_buffer)
+
+
+          # Specify variables #############################
+          myexpression = "SELECT count(*) FROM s3object s"
+          my_csv_output_serialization = 'CSV'
+          my_fileheader_info = 'USE'
+
+          # Job Manifest Details ################################
+          job_manifest_format = 'S3BatchOperations_CSV_20180820'  # S3InventoryReport_CSV_20161130
+
+
+          # Job Report Details ############################
+          report_prefix = str(os.environ['batch_ops_restore_report_prefix'])
+          report_format = 'Report_CSV_20180820'
+          report_scope = 'AllTasks'
+
+          # Construct ARNs ############################################
+          report_bucket_arn = 'arn:aws:s3:::' + report_bucket_name
+
+          # Initiate Service Clients ###################
+          s3Client = boto3.client('s3', region_name=my_region)
+          s3ControlClient = boto3.client('s3control', region_name=my_region)
+
+          # S3 Select query to check the number of rows in the Athena CSV result.
+          # Ensure you include Scan range in query, do not scan the whole object. Large objects for example 65GB times out!
+          # Do not trigger S3 Batch if the number of rows is less than 1 (exluding the header)
+          def select_query_function_csv(bucket, key, expression, fileheaderinfo, outputserialization):
+              resp = s3Client.select_object_content(
+                  Bucket=bucket,
+                  Key=key,
+                  Expression=expression,
+                  ExpressionType='SQL',
+                  ScanRange={
+                  'Start': 0,
+                  'End': 10240
+                  },
+                  RequestProgress={
+                      'Enabled': True
+                  },
+                  InputSerialization={
+                      "CSV": {
+                          'FileHeaderInfo': fileheaderinfo,
+                      },
+                  },
+                  OutputSerialization={my_csv_output_serialization: {}}, )
+              for event in resp['Payload']:
+                  if 'Records' in event:
+                      # logger.info(event['Records']['Payload'].decode('utf-8'))
+                      num_of_rows = int(event['Records']['Payload'].decode('utf-8'))
+                      logger.info(f'There are {num_of_rows} of rows in the Athena query result')
+                      return num_of_rows
+
+
+          # Retrieve Manifest ETag
+          def get_manifest_etag(manifest_s3_bucket, manifest_s3_key):
+              # Get manifest key ETag ####################################
+              try:
+                  manifest_key_object_etag = s3Client.head_object(Bucket=manifest_s3_bucket, Key=manifest_s3_key)['ETag']
+              except ClientError as e:
+                  logger.error(e)
+              else:
+                  logger.info(manifest_key_object_etag)
+                  return manifest_key_object_etag
+
+
+          # S3 Batch Restore Job Function
+
+          def s3_batch_ops_objlock(manifest_bucket, manifest_key, job_request_token):
+              logger.info("Initiating the Amazon S3 Batch Operation Object Lock Retention Job")
+
+              my_job_description = f"Auto Extend Object Lock Solution Job for S3Bucket: {my_s3_bucket}"
+
+              # Construct ARNs ############################################
+              manifest_bucket_arn = 'arn:aws:s3:::' + manifest_bucket
+              manifest_key_arn = 'arn:aws:s3:::' + manifest_bucket + '/' + manifest_key
+              # Get manifest key ETag ####################################
+              manifest_key_object_etag = get_manifest_etag(manifest_bucket, manifest_key)
+
+              # Set Manifest format and Specify Manifest Fields #
+              manifest_format = None
+              manifest_fields = None
+              manifest_fields_count = None
+
+              if "athena-query-results/" in manifest_key:
+                  logger.info("Set Format to CSV and Don't use Version ID in Manifest")
+                  manifest_format = 'S3BatchOperations_CSV_20180820'
+                  manifest_fields = ['Bucket', 'Key']
+                  manifest_fields_count = str(len(manifest_fields))
+
+
+              my_bops_objlock_kwargs = {
+
+                  'AccountId': accountId,
+                  'ConfirmationRequired': False,
+                  'Operation': {
+                      'S3PutObjectRetention': {
+                                  'BypassGovernanceRetention': True,
+                                  'Retention': {
+                                      'RetainUntilDate': my_min_obj_retention,
+                                      'Mode': 'COMPLIANCE'
+                                  }
+                      }
+                  },
+                  'Report': {
+                      'Bucket': report_bucket_arn,
+                      'Format': report_format,
+                      'Enabled': True,
+                      'Prefix': report_prefix,
+                      'ReportScope': report_scope
+                  },
+                  'Manifest': {
+                      'Spec': {
+                          'Format': manifest_format,
+                          'Fields': manifest_fields
+                      },
+                      'Location': {
+                          'ObjectArn': manifest_key_arn,
+                          'ETag': manifest_key_object_etag
+                      }
+                  },
+                  'Description': my_job_description,
+                  'Priority': 10,
+                  'RoleArn': my_role_arn,
+                  'Tags': [
+                      {
+                          'Key': 'job-created-by',
+                          'Value': 'Auto Extend Object Lock Solution'
+                      },
+                  ],
+                  'ClientRequestToken': job_request_token
+              }
+
+
+              try:
+                  response = s3ControlClient.create_job(**my_bops_objlock_kwargs)
+                  logger.info(f"JobID is: {response['JobId']}")
+                  logger.info(f"S3 RequestID is: {response['ResponseMetadata']['RequestId']}")
+                  logger.info(f"S3 Extended RequestID is:{response['ResponseMetadata']['HostId']}")
+                  return response['JobId']
+              except ClientError as e:
+                  logger.error(e)
+
+
+          def lambda_handler(event, context):
+              logger.info(event)
+              s3Bucket = str(event['Records'][0]['s3']['bucket']['name'])
+              # Use sequencer to prevent duplicate invocation
+              my_request_token = str(event['Records'][0]['s3']['object']['sequencer'])
+              logger.info(s3Bucket)
+              s3Key = parse.unquote_plus(event['Records'][0]['s3']['object']['key'], encoding='utf-8')
+              logger.info(s3Key)
+              my_csv_num_rows = select_query_function_csv(s3Bucket, s3Key, myexpression, my_fileheader_info, my_csv_output_serialization)
+              logger.info(my_csv_num_rows)
+              if my_csv_num_rows > 1:
+                  logger.info(f'We have more than 1 row in our athena query result, now trigger the S3 Batch Job')
+                  job_id = s3_batch_ops_objlock(s3Bucket, s3Key, my_request_token)
+              else:
+                  logger.info(f'No Action required, Athena returned no results')
+
+
+
+##################################### Code Ends  ######################################################
