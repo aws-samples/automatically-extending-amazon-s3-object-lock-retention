@@ -107,7 +107,7 @@ S3 Inventory reports, Athena outputs, and S3 Batch Operations reports are stored
 
 **Note:**
 
-1.  Failed task in each Batch Operations Job. The manifest file automatically generated from Amazon S3 Inventory contains a CSV header row, because [S3 Batch Operations does not support header rows on CSV](https://docs.aws.amazon.com/AmazonS3/latest/userguide/inventory-configure-bops.html) you will notice one failed task in the restore job.
+1.  Failed task in Batch Operations Job. The manifest file automatically generated from Amazon S3 Inventory contains a CSV header row, because [S3 Batch Operations does not support header rows on CSV](https://docs.aws.amazon.com/AmazonS3/latest/userguide/inventory-configure-bops.html) you will notice **one** failed task in each job.
 
 
 
