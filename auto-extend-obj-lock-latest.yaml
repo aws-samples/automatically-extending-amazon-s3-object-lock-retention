@@ -377,6 +377,7 @@ Resources:
       Name: !Sub 'objlockworkgroup-${StackNametoLower.change_to_lower}'
       Description: Auto Extend Object Lock Athena WorkGroup
       State: ENABLED
+      RecursiveDeleteOption: true
       WorkGroupConfiguration:
         EnforceWorkGroupConfiguration: true
         ResultConfiguration:
@@ -619,7 +620,7 @@ Resources:
                   - 'glue:GetTable'
                 Resource:
                   - !Sub "arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:table/extendobjlockgluedb-${StackNametoLower.change_to_lower}/*"
-                  - !Sub "arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:table/objlockinventory-${StackNametoLower.change_to_lower}"
+                  - !Sub "arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:table/objlockinventory-${StackNametoLower.change_to_lower}*"
                   - !Sub "arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:database/extendobjlockgluedb-${StackNametoLower.change_to_lower}/*"
                   - !Sub "arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:database/extendobjlockgluedb-${StackNametoLower.change_to_lower}"
                   - !Sub "arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:catalog"
