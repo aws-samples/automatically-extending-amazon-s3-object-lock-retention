@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: 2010-09-09
 Description: >-
-  Sets a compliance mode Object Lock on all current versions of objects in a specified S3 Bucket, and automatically extends the lock retention date to ensure continous protection for a minimum period.
+  Sets a compliance mode Object Lock on all current versions of objects in a specified S3 Bucket, and automatically extends the lock retention date to ensure continous protection for a minimum period (uksb-1tthgi815).
 
 Metadata:
 
@@ -41,7 +41,7 @@ Metadata:
 
     ParameterLabels:
       BucketwithObjLock:
-        default: "This solution sets a compliance mode Object Lock on all current versions of objects in a specified S3 bucket, and automatically extends the lock rentention dates to ensure continous protection for a minimum period."
+        default: "This solution places an S3 Object Lock retention period, in compliance mode, on all current versions of objects in a specified S3 bucket. It then automatically extends each object's retention period indefinitely, providing protection for a minimum period."
       BucketwithObjLockPrefix:
         default: "Prefix (optional)"
       ObjMinimumRetention:
@@ -68,20 +68,20 @@ Parameters:
 
 
   ObjMinimumRetention:
-    Description: Current versions of objects will always have a compliance-mode Object Lock for at least this number of future days. For retention periods longer than 365 days, edit 'ObjMinimumRetention:' in the template.
+    Description: Current versions of objects will always have an S3 Object Lock compliance mode retention period, for at least this number of future days.
     Default: 30
     Type: Number
     MinValue: 1
     MaxValue: 365
-    ConstraintDescription: Value must be a valid Integer, higher than 1 and less than 365
+    ConstraintDescription: Minimum Object Lock retention period must be a valid integer, higher than 0. Value is restricted to 365 - edit 'ObjMinimumRetention:' in the template if a longer minimum retetion is desired.
 
   Buffer:
-    Description: Every object will be have its lock extended every 'this' number of days, to 'minimum retention period + extension frequency' days in the future. The minimum value is 7 days (as the extension process runs once a week) and should be a multiple of 7. A longer extension frequency decreases how often each object has its lock extended, reducing costs.
+    Description: Every object's retention period will be extended every 'this' number of days, to 'minimum retention period + extension frequency' days in the future. The minimum value is 7 days (as the extension process runs once a week) and should be a multiple of 7. A longer extension frequency decreases how often each object has its lock extended, reducing costs.
     Default: 7
     Type: Number
     MinValue: 7
     MaxValue: 364
-    ConstraintDescription: Value must be a valid Integer and higher than 7
+    ConstraintDescription: Value must be a valid Integer and higher than 7. Value is restricted to 364 - edit 'Buffer:' in the template if a longer extension frequency is desired.
 
 
 Mappings:
