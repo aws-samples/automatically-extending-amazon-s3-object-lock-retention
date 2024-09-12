@@ -28,11 +28,6 @@ num_and_buffer = min_obj_retention + retention_buffer
 my_min_obj_retention = datetime.datetime.now() + datetime.timedelta(num_and_buffer)
 
 
-# Specify variables #############################
-myexpression = "SELECT count(*) FROM s3object s"
-my_csv_output_serialization = 'CSV'
-my_fileheader_info = 'USE'
-
 # Job Manifest Details ################################
 job_manifest_format = 'S3BatchOperations_CSV_20180820'  # S3InventoryReport_CSV_20161130
 
@@ -49,34 +44,30 @@ report_bucket_arn = 'arn:aws:s3:::' + report_bucket_name
 s3Client = boto3.client('s3', region_name=my_region)
 s3ControlClient = boto3.client('s3control', region_name=my_region)
 
-# S3 Select query to check the number of rows in the Athena CSV result.
-# Ensure you include Scan range in query, do not scan the whole object. Large objects for example 65GB times out!
-# Do not trigger S3 Batch if the number of rows is less than 1 (exluding the header)
-def select_query_function_csv(bucket, key, expression, fileheaderinfo, outputserialization):
-    resp = s3Client.select_object_content(
-        Bucket=bucket,
-        Key=key,
-        Expression=expression,
-        ExpressionType='SQL',
-        ScanRange={
-        'Start': 0,
-        'End': 10240
-        },
-        RequestProgress={
-            'Enabled': True
-        },
-        InputSerialization={
-            "CSV": {
-                'FileHeaderInfo': fileheaderinfo,
-            },
-        },
-        OutputSerialization={my_csv_output_serialization: {}}, )
-    for event in resp['Payload']:
-        if 'Records' in event:
-            # logger.info(event['Records']['Payload'].decode('utf-8'))
-            num_of_rows = int(event['Records']['Payload'].decode('utf-8'))
-            logger.info(f'There are {num_of_rows} of rows in the Athena query result')
-            return num_of_rows
+# Read the Generated CSV manifest file from Amazon S3 to check the number of rows in the Athena CSV result.
+# Ensure you include range in the get_object, do not read the whole object. Large objects for example 65GB times out!
+# Do not trigger S3 Batch if the number of rows is less than 1 (excluding the header)
+
+
+def select_query_function_csv(bucket, key):
+    # Specify static byte range
+    bytes_range = f'bytes=0-10240'
+    try:
+        # Read the object from S3, specify the range.
+        response = s3Client.get_object(Bucket=bucket, Key=key, Range=bytes_range)
+    except ClientError as e:
+        logger.error(f"Unable to complete requested operation, see Clienterror details below:")
+        print(f"Unable to complete requested operation, see Clienterror details below:")
+    except Exception as e:
+        logger.error(f"Unable to complete requested operation, see Additional Client/Service error details below:")
+        logger.error(e)
+    else:
+        # Confirm reading from Amazon S3 was successful and determine the number of rows
+        logger.info("Successfully completed the copy process!")
+        csv_read = response.get('Body').readlines()
+        num_of_rows = int(len(csv_read))
+        logger.info(f'There are {num_of_rows} of rows in the Athena query result')
+        return num_of_rows
 
 
 # Retrieve Manifest ETag
@@ -177,7 +168,7 @@ def lambda_handler(event, context):
     logger.info(s3Bucket)
     s3Key = parse.unquote_plus(event['Records'][0]['s3']['object']['key'], encoding='utf-8')
     logger.info(s3Key)
-    my_csv_num_rows = select_query_function_csv(s3Bucket, s3Key, myexpression, my_fileheader_info, my_csv_output_serialization)
+    my_csv_num_rows = select_query_function_csv(s3Bucket, s3Key)
     logger.info(my_csv_num_rows)
     if my_csv_num_rows > 1:
         logger.info(f'We have more than 1 row in our athena query result, now trigger the S3 Batch Job')
