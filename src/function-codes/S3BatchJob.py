@@ -63,7 +63,7 @@ def select_query_function_csv(bucket, key):
         logger.error(e)
     else:
         # Confirm reading from Amazon S3 was successful and determine the number of rows
-        logger.info("Successfully completed the copy process!")
+        logger.info("Successfully completed the read process!")
         csv_read = response.get('Body').readlines()
         num_of_rows = int(len(csv_read))
         logger.info(f'There are {num_of_rows} of rows in the Athena query result')
