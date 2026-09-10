@@ -1,6 +1,7 @@
 # Maintaining object immutability by automatically extending Amazon S3 Object Lock retention
 
-##  
+>UPDATE 9/8/26: This AWS solution has been superseded by the launch of S3 [Object Lock variable retention with event hold](https://aws.amazon.com/about-aws/whats-new/2026/09/amazon-s3-object-lock-variable-retention), refer to the [launch blog post](https://aws.amazon.com/blogs/storage/flexibly-control-amazon-s3-object-lock-retention-based-on-real-business-events) for more information.
+
 
 ## Description
 
